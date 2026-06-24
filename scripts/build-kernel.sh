@@ -85,7 +85,11 @@ case "$MODE" in
   image)
     info "STANDALONE kernel Image build in $KD (kernel-env applied)"
     [[ -n "${TCDIR:-}" && -d "$TCDIR" ]] || die "crosstools bin not found (set TCDIR)"
-    run kmake -j"$(nproc)" Image
+    # NOTE: kmake is a shell function (can't be exec'd by rtk), so invoke the
+    # real `make` binary here with the same env so rtk can wrap/filter it.
+    run make -C "$KD" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" \
+        MODEL="$MODEL" BCM_KF="$BCM_KF" LINUX_VER_STR="$LINUX_VER_STR" \
+        -j"$(nproc)" Image
     ;;
   *)
     die "unknown mode '$MODE' (use: full | image)"
