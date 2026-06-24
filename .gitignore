@@ -1,0 +1,14 @@
+# build artifacts / device transfer staging — never commit
+*.pkgtb
+*.itb
+*.img
+bootfs.itb
+rootfs.img
+# config_base backups (live on the SDK, not in this repo)
+config_base*.orig
+config_base*.bak
+config_base*.configure-kernel.bak
+# editor / OS cruft
+*.swp
+*~
+.DS_Store

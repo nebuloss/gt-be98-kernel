@@ -1,0 +1,17 @@
+# kprobes.fragment — enable KPROBES on the merlin 4.19 GT-BE98 kernel
+#
+# Verified working 2026-06-24 (built a pkgtb with register_kprobe in System.map).
+# Purpose: kprobe the CLOSED stock dhd binary (e.g. its WLC_UP / -110 wedge path)
+# from a kernel module — kprobes is the only way to trace a binary blob.
+#
+# Apply with scripts/configure-kernel.sh; it edits config_base.6a.6813 IN PLACE.
+#
+# NOTE on the third line: enabling CONFIG_KPROBES EXPOSES the new symbol
+# CONFIG_KPROBES_SANITY_TEST in the build's Kconfig. If it has no value in
+# config_base, the build's `syncconfig` prompts for it non-interactively ->
+# "Unexpected EOF" -> build fails. So we must PIN it to its default (off).
+# CONFIG_OPTPROBES is `def_bool` -> resolved automatically, no pin needed.
+
+CONFIG_KPROBES=y
+CONFIG_KALLSYMS_ALL=y
+# CONFIG_KPROBES_SANITY_TEST is not set
