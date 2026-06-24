@@ -114,9 +114,9 @@ if [[ -f "$CD" ]]; then
     for tok in $VERIFY_SYMS; do
         case "$tok" in
           CONFIG_*)
-            if zcat "$CD" | grep -q "^$tok=y\|^$tok=m"; then
+            if zcat "$CD" 2>/dev/null | grep -Eq "^$tok=(y|m)"; then
                 info "  config_data.gz: $tok present (set)"
-            elif zcat "$CD" | grep -q "$tok"; then
+            elif zcat "$CD" 2>/dev/null | grep -q "$tok"; then
                 info "  config_data.gz: $tok present"
             else
                 info "  WARN config_data.gz: $tok NOT set"

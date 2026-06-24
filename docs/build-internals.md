@@ -282,5 +282,37 @@ clean base to rebase onto a newer 4.19.x). It does **not** make a near-mainline
 kernel: the ~10M of added vendor source is required (SoC platform + the
 networking glue the closed `wl`/`dhd` bind to), and a *flashable firmware* still
 needs the out-of-tree `bcmdrivers/` + toolchain + those blobs, plus the SDK
-packaging (currently blocked on this snapshot by a missing `bcm_bpm.o` prebuilt,
-unrelated to the kernel).
+packaging (see §7 for the prebuilt-blob prerequisite).
+
+---
+
+## 7. Full firmware build: the missing closed prebuilt `.o`
+
+A full `build.sh` (`make gt-be98` → `.pkgtb`) needs closed Broadcom prebuilt
+objects that **gnuton's SDK does not ship** and that have **no source**:
+`bcm_bpm.o`, `cmdlist.o`, `bcmvlan.o`, `pktflow.o` (and `rdpa_cmd.o`,
+`rdpa_gpl_ext.o`, `rdpa_mw.o`, `unimac_drv_impl1.o`, …). Without them the build
+dies at e.g. `cp: cannot stat '.../bpm/bcm96813/bcm_bpm.o'`. They are **not**
+recoverable from git (untracked) and have no in-tree donor for BCM6813.
+
+**They are available in a sibling RMerl checkout of the same SDK version**
+(`~/re-sdk/asuswrt-merlin.ng/release/src-rt-5.04behnd.4916`) and are
+**ABI-compatible** with the gnuton tree (same `src-rt-5.04behnd.4916`, kernel
+4.19.294, chip 6813, aarch64). [`scripts/sync-prebuilts.sh`](../scripts/sync-prebuilts.sh)
+copies every prebuilt `.o` the reference SDK has that ours lacks, **only where no
+same-name `.c` exists** (never shadowing open-source files the build compiles).
+
+Second gotcha: `prune-vendor.sh` leaves **stale libtool state** in userspace —
+empty `.libs/` dirs with surviving `.lo`/`.la` — so the build skips recompiling
+then fails relinking (first hit: `libnl`, `genl/.libs/*.o: No such file`).
+`sync-prebuilts.sh --clean-libtool` clears those so they rebuild from the intact
+`.c`.
+
+End-to-end recipe that produced a verified pkgtb (2026-06-24):
+```bash
+scripts/sync-prebuilts.sh --clean-libtool        # restore closed blobs + fix libtool
+scripts/configure-kernel.sh config-fragments/kprobes.fragment
+scripts/build-kernel.sh full                     # -> GT-BE98_*.pkgtb, verify-artifact OK
+```
+Result: `register_kprobe` in `System.map`, `CONFIG_KPROBES=y` in the kernel's
+embedded `config_data.gz`, all `verify-artifact` checks passing.

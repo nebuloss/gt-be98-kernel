@@ -115,6 +115,7 @@ scripts/
   configure-kernel.sh          base defconfig + fragments + olddefconfig -> $KD/.config
   save-defconfig.sh            $KD/.config -> configs/gtbe98_defconfig (savedefconfig)
   fetch-mainline.sh            pristine kernel.org 4.19.294 + delta -> reconstructed source
+  sync-prebuilts.sh            restore closed bcmdrivers prebuilt .o (from a ref SDK) for a full build
   build-kernel.sh              build on dev-build via rtk (full | image), verify, print pkgtb
   split-pkgtb.sh               dumpimage split of the .pkgtb into bootfs.itb + rootfs.img
   flash-slot1.sh               transfer + flash SLOT1 only (safety-guarded), bcm_bootstate 6 + reboot
