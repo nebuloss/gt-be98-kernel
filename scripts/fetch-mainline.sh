@@ -92,27 +92,36 @@ fi
 info "reconstructed GT-BE98 kernel source at: $OUTDIR"
 info "  ( = official linux-$KVER + patches/bcm-kf-mods.patch + overlay/ - deletions.list )"
 
-# Excludes shared by VERIFY (build outputs + intentionally-excluded vendor scratch).
+# Excludes shared by VERIFY: build outputs + intentionally-excluded vendor scratch.
 EXC=(--exclude=.git --exclude='.config*' --exclude='*.o' --exclude='*.cmd' --exclude='.*.cmd'
      --exclude='*.ko' --exclude='*.mod*' --exclude=include/config --exclude=include/generated
      --exclude='arch/*/include/generated' --exclude='System.map' --exclude='vmlinux*'
      --exclude=Module.symvers --exclude='*.order' --exclude='modules.builtin*' --exclude='built-in*'
      --exclude='*.a' --exclude='config_*' --exclude='*.dtb' --exclude='Image*' --exclude='gtbe98_defconfig'
      --exclude='zz_*' --exclude='.tmp*' --exclude='*.tab.c' --exclude='*.tab.h' --exclude='*.lex.c'
-     --exclude=conf --exclude=mconf --exclude='rdp_*flags.txt' --exclude='config_data.gz'
-     --exclude='.version' --exclude='.pre_kernelbuild' --exclude='.untar_complete' --exclude='*.d')
+     --exclude=conf --exclude=mconf --exclude=nconf --exclude='rdp_*flags.txt' --exclude='config_data.gz'
+     --exclude='.version' --exclude='.pre_kernelbuild' --exclude='.untar_complete' --exclude='*.d'
+     # generated source + host-tool binaries + intentionally-dropped non-source
+     --exclude='*.s' --exclude='*.asn1.c' --exclude='*.asn1.h' --exclude='*-core.S' --exclude='vdso.lds'
+     --exclude='vdso.so*' --exclude='defconfig' --exclude='defconfig.prekprobe' --exclude='.gitignore'
+     --exclude='x509_certificate_list' --exclude='gen_crc32table' --exclude='asn1_compiler'
+     --exclude='fixdep' --exclude='bin2c' --exclude='dtc' --exclude='extract-cert' --exclude='kallsyms'
+     --exclude='recordmcount' --exclude='sortextable' --exclude='unifdef' --exclude='modpost'
+     --exclude='mk_elfconfig' --exclude='.missing-syscalls.d')
 
 if [[ "${VERIFY:-0}" == 1 ]]; then
     # shellcheck source=scripts/kernel-env.sh
     source "$HERE/kernel-env.sh"
     [[ -d "$KD" ]] || die "VERIFY set but \$KD not found: $KD"
     info "diffing reconstructed source vs \$KD (source only) ..."
-    n="$(diff -rq "${EXC[@]}" "$OUTDIR" "$KD" 2>/dev/null | grep -viE 'include/config|/generated' | wc -l)"
+    # also drop dir-only residuals whose basename is a generated dir (config|generated)
+    flt() { grep -viE 'include/config|/generated|: (generated|config)$'; }
+    n="$(diff -rq "${EXC[@]}" "$OUTDIR" "$KD" 2>/dev/null | flt | wc -l)"
     if [[ "$n" -eq 0 ]]; then
         info "VERIFY OK: reconstructed source == \$KD (0 source differences)"
     else
         info "VERIFY: $n residual source differences:"
-        diff -rq "${EXC[@]}" "$OUTDIR" "$KD" 2>/dev/null | grep -viE 'include/config|/generated' | head
+        diff -rq "${EXC[@]}" "$OUTDIR" "$KD" 2>/dev/null | flt | head
     fi
 fi
 
