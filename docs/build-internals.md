@@ -131,13 +131,35 @@ minimal defconfig is a faithful base as long as the SDK Kconfig is unchanged.
 
 ---
 
-## 3. Build
+## 3. Build — kernel-space vs user-space
+
+The merlin build has a **phase boundary** that matches the right separation of
+concerns, and `build-kernel.sh` exposes it:
+
+| Phase / mode | Builds | Belongs to |
+|---|---|---|
+| **`kernel`** (default) = SDK `recipe_kernel` | kernel `Image` + all `.ko` modules (incl. `=m` bcmdrivers); installs to `…/fs/lib/modules/4.19.294/` | **the kernel** |
+| `userspace` (NOT run by `kernel` mode) | libnl, router daemons, the rootfs userland | the **rootfs** / firmware |
+| **`full`** = `build.sh` (`make gt-be98`) | both phases + packaging → `.pkgtb` | firmware integration |
 
 ```bash
-scripts/build-kernel.sh            # full: $FW/build.sh -> .pkgtb (reliable, packaged)
-scripts/build-kernel.sh image      # standalone `kmake -jN Image` (fast config-compile check)
-scripts/build-kernel.sh --remote   # from dev-code, dispatch the full build to dev-build
+scripts/build-kernel.sh            # kernel + modules (recipe_kernel) — NO userspace
+scripts/build-kernel.sh kernel
+scripts/build-kernel.sh full       # whole firmware -> .pkgtb
+scripts/build-kernel.sh --remote kernel   # from dev-code, dispatch to dev-build
 ```
+
+> **The vendor kernel is NOT standalone-buildable.** `BCM_KF=y` adds `brcmdrivers-y`
+> to the *kernel's own* build, so building the `Image` compiles bcmdrivers in
+> (the 68 `BCM_KF_*` kernel patches + 94 `=y` platform/accel drivers are intrinsic;
+> only the 34 `=m` are loadable modules). A bare `make Image` therefore needs the
+> full SDK env and unravels — so `kernel` mode reuses the firmware's build env
+> (`tools/env.sh`) and drives `recipe_kernel`, which is the reliable kernel build.
+> `image` mode (bare `make Image`) is kept only as a fragile compile-check.
+
+The `recipe_kernel` phase produces the kernel + modules and **never enters the
+`userspace` phase** (verified: `USERSPACE STARTED` count 0) — so userspace-tool
+build issues (e.g. the `libnl` relink) belong to the rootfs build, not here.
 
 `build.sh` ends with, inside `$SDKDIR`:
 ```

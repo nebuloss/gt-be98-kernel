@@ -76,8 +76,10 @@ cd ~/be98/gt-be98-kernel && git pull
 # 1. Regenerate .config from the base defconfig + the fragment(s) you want.
 ./scripts/configure-kernel.sh config-fragments/kprobes.fragment
 
-# 2. Build (full build.sh -> .pkgtb) and verify the symbols landed.
-VERIFY_SYMS="CONFIG_KPROBES CONFIG_KALLSYMS_ALL register_kprobe" ./scripts/build-kernel.sh
+# 2. Build the KERNEL (Image + .ko modules; no userspace) and verify symbols.
+#    For a full flashable .pkgtb instead, use `./scripts/build-kernel.sh full`
+#    (needs scripts/sync-prebuilts.sh first — see docs §7).
+VERIFY_SYMS="CONFIG_KPROBES CONFIG_KALLSYMS_ALL register_kprobe" ./scripts/build-kernel.sh kernel
 
 # 3. Split the .pkgtb into bootfs.itb + rootfs.img.
 ./scripts/split-pkgtb.sh
