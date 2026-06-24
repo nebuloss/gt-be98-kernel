@@ -5,26 +5,30 @@
 # script is meant to be run ON dev-build (or it will SSH there for you with
 # --remote). Run configure-kernel.sh FIRST to produce $KD/.config.
 #
-# Two modes:
-#   full   (default) — drives ~/be98/gt-be98-firmware/build.sh, which does
-#                      `make FORCE=1 ... gt-be98` and produces the flashable
-#                      .pkgtb. This is the RELIABLE path for a packaged image
-#                      (BCM_KF pulls bcmdrivers in; the SDK assembles the FIT).
-#   image  — standalone kernel `make -jN Image` in $KD with the GT-BE98 kbuild
-#            env (from kernel-env.sh). Fast; good to check a config compiles.
-#            Does NOT produce a .pkgtb.
+# Three modes:
+#   kernel (default) — KERNEL-SPACE ONLY: kernel Image + all .ko modules, via the
+#                      SDK's `recipe_kernel` phase. Does NOT build userspace tools
+#                      (libnl, router daemons) — those belong to the rootfs build.
+#                      This is the kernel repo's proper deliverable. The kernel
+#                      can't build truly standalone (BCM_KF compiles bcmdrivers in),
+#                      so this reuses the firmware's build env (toolchain etc.).
+#   full             — drives ~/be98/gt-be98-firmware/build.sh (kernel + userspace
+#                      + .pkgtb). A firmware-level build; produces the flashable
+#                      .pkgtb. Use when you want the whole image.
+#   image            — standalone `make Image` (FRAGILE/best-effort; the vendor
+#                      kernel resists standalone builds — prefer `kernel`).
 #
 # After building it VERIFIES the requested configs landed (config_data.gz +
-# System.map) and prints the .pkgtb path.
+# System.map) and prints any .pkgtb.
 #
 # Usage (on dev-build):
-#   scripts/build-kernel.sh                       # full build
-#   scripts/build-kernel.sh full
-#   scripts/build-kernel.sh image
+#   scripts/build-kernel.sh                       # kernel + modules (recipe_kernel)
+#   scripts/build-kernel.sh kernel
+#   scripts/build-kernel.sh full                  # whole firmware -> .pkgtb
 #   VERIFY_SYMS="CONFIG_KPROBES register_kprobe" scripts/build-kernel.sh
 #
 # Usage (from dev-code, dispatch to dev-build over SSH):
-#   scripts/build-kernel.sh --remote [full|image]
+#   scripts/build-kernel.sh --remote [kernel|full|image]
 #
 # Env: FW SDKDIR KD (see kernel-env.sh), plus
 #   TARGET   default 96813GW
@@ -47,7 +51,7 @@ die()  { echo "build-kernel: ERROR: $*" >&2; exit 1; }
 # --remote: re-dispatch this script on dev-build (used from dev-code).
 if [[ "${1:-}" == "--remote" ]]; then
     shift
-    mode="${1:-full}"
+    mode="${1:-kernel}"
     FW="${FW:-$HOME/be98/gt-be98-firmware}"
     REPO_REMOTE="${REPO_REMOTE:-$HOME/be98/gt-be98-kernel}"
     info "dispatching to $DEVBUILD: build-kernel.sh $mode"
@@ -58,7 +62,7 @@ fi
 # shellcheck source=scripts/kernel-env.sh
 source "$HERE/kernel-env.sh"
 
-MODE="${1:-full}"
+MODE="${1:-kernel}"
 [[ -f "$KD/.config" ]] || die "no $KD/.config — run scripts/configure-kernel.sh first"
 
 PKGTB_GLOB="$SDKDIR/targets/$TARGET/GT-BE98_*_nand_squashfs.pkgtb"
@@ -72,8 +76,27 @@ run() {
 }
 
 case "$MODE" in
+  kernel)
+    # KERNEL-SPACE ONLY: kernel Image + all .ko modules (incl. =m bcmdrivers),
+    # via the SDK's own `recipe_kernel` phase (= modbuild + dtbs +
+    # prepare_linux_image). Does NOT build userspace tools (libnl, router
+    # daemons) — those are a rootfs/firmware concern (the `userspace` phase).
+    # This is the kernel repo's proper deliverable. Reuses the firmware's build
+    # env (toolchain, host-env sanitize) exactly like build.sh.
+    info "KERNEL-SPACE build (recipe_kernel): kernel Image + .ko modules, NO userspace"
+    [[ -d "$FW/tools" ]] || die "firmware tools/ not found under $FW (need its env scripts)"
+    export GTBE98_ROOT="$FW"
+    export GTBE98_TC_ROOT="$FW/toolchain/am-toolchains/brcm-arm-hnd"
+    # shellcheck source=/dev/null
+    source "$FW/tools/sanitize-host-env.sh"; gtbe98_sanitize_ld_library_path
+    # shellcheck source=/dev/null
+    source "$FW/tools/env.sh"; gtbe98_sanitize_ld_library_path
+    run env -u LD_LIBRARY_PATH make -C "$SDKDIR" FORCE=1 SHELL=/bin/bash \
+        GTBE98_TC_ROOT="$GTBE98_TC_ROOT" GTBE98_ROOT="$GTBE98_ROOT" LD_LIBRARY_PATH= \
+        PROFILE="$TARGET" recipe_kernel
+    ;;
   full)
-    info "FULL build via $FW/build.sh (make FORCE=1 ... gt-be98)"
+    info "FULL firmware build via $FW/build.sh (kernel + userspace + .pkgtb)"
     [[ -x "$FW/build.sh" ]] || die "$FW/build.sh not found/executable"
     # build.sh's profile_saved_check guard can fire once on FORCE=1 and exit 1
     # (it touches .last_profile then bails). Retry once on that benign first-run.
@@ -83,7 +106,7 @@ case "$MODE" in
     fi
     ;;
   image)
-    info "STANDALONE kernel Image build in $KD (kernel-env + SDK layout vars)"
+    info "STANDALONE 'make Image' (FRAGILE/best-effort — prefer 'kernel'); $KD"
     [[ -n "${TCDIR:-}" && -d "$TCDIR" ]] || die "crosstools bin not found (set TCDIR)"
     # BCM_KF=y makes the kernel Makefile `include $(PROFILE_DIR)/../../kernel/
     # bcmkernel/Makefile.brcm_pre`, which pulls bcmdrivers into the build and
@@ -104,7 +127,7 @@ case "$MODE" in
         -j"$(nproc)" Image
     ;;
   *)
-    die "unknown mode '$MODE' (use: full | image)"
+    die "unknown mode '$MODE' (use: kernel | full | image)"
     ;;
 esac
 
