@@ -95,7 +95,7 @@ case "$MODE" in
         MODEL="$MODEL" BCM_KF="$BCM_KF" LINUX_VER_STR="$LINUX_VER_STR" \
         PROFILE_DIR="$SDKDIR/targets/$TARGET" \
         PROJECT_DIR="$SDKDIR/targets/$TARGET" \
-        BUILD_DIR="$SDKDIR/build" \
+        BUILD_DIR="$SDKDIR" \
         KERNEL_DIR="$KD" TOPDIR="$KD" \
         BRCMDRIVERS_DIR="$SDKDIR/bcmdrivers" \
         BRCMDRIVERS_DIR_RELATIVE=../../bcmdrivers \
