@@ -8,6 +8,10 @@ rootfs.img
 config_base*.orig
 config_base*.bak
 config_base*.configure-kernel.bak
+# mainline reconstruction working dirs + downloaded tarballs (fetch-mainline.sh)
+/build/
+linux-*.tar.xz
+linux-*.tar.gz
 # editor / OS cruft
 *.swp
 *~

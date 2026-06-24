@@ -105,14 +105,34 @@ configs/
   gtbe98_defconfig             tracked minimal base defconfig (STOCK; savedefconfig)
 config-fragments/
   kprobes.fragment             example feature delta (standard kbuild fragment)
+patches/
+  bcm-kf-mods.patch            edits to UPSTREAM 4.19.294 files (362 files, +11.8k/-186)
+  deletions.list               upstream files the vendor removes (234)
+  README.md                    the official-source + delta model
+overlay/                       wholly-new vendor source files (722, ~10M; browsable)
 scripts/
   kernel-env.sh                sourced env helper (PATH/LD_LIBRARY_PATH/BCM_KF/...)
   configure-kernel.sh          base defconfig + fragments + olddefconfig -> $KD/.config
   save-defconfig.sh            $KD/.config -> configs/gtbe98_defconfig (savedefconfig)
+  fetch-mainline.sh            pristine kernel.org 4.19.294 + delta -> reconstructed source
   build-kernel.sh              build on dev-build via rtk (full | image), verify, print pkgtb
   split-pkgtb.sh               dumpimage split of the .pkgtb into bootfs.itb + rootfs.img
   flash-slot1.sh               transfer + flash SLOT1 only (safety-guarded), bcm_bootstate 6 + reboot
 ```
+
+## Official kernel.org source + reviewable delta
+
+The kernel is **official Linux 4.19.294 + a reviewable delta** (no binary blobs
+in the kernel tree — verified). Reconstruct it from the pristine kernel.org
+tarball:
+```bash
+scripts/fetch-mainline.sh            # -> build/linux-4.19.294 (official + delta)
+VERIFY=1 scripts/fetch-mainline.sh   # diff the result vs the SDK tree -> 0 source diffs
+```
+The delta is split into `patches/bcm-kf-mods.patch` (edits to upstream files, the
+auditable `BCM_KF` footprint), `overlay/` (added vendor source), and
+`patches/deletions.list`. See [`patches/README.md`](patches/README.md) and
+`docs/build-internals.md §6`.
 
 Scripts parameterize SDK/device paths via env vars with sensible defaults
 (`FW`, `SDKDIR`, `KD`, `TARGET`, `DEVICE`, `DEVPORT`, ...). No secrets hardcoded.

@@ -251,8 +251,36 @@ tree. The realistic spectrum:
 3. **OpenWrt-style** — only partial upstream support exists for some BCM63xx;
    BE-series WiFi 7 (BCM6813 + wl/dhd) is not openly supported.
 
-**A concrete, low-risk first step** (not yet done) is to *quantify the distance
-from mainline*: diff the SDK's `$KD` against an unpacked kernel.org 4.19.294 to
-measure the patch surface (files touched, `BCM_KF` hunks). That turns "in theory"
-into a real estimate before committing to a port. Ask for it and it can be run on
-dev-build the same evidence-based way the rest of this doc was established.
+### Measured patch surface + the implemented "official source" path
+
+This was measured (diff of `$KD` vs pristine kernel.org **4.19.294**) and the
+result is encouraging: edits to **upstream** files are modest and surgical —
+**362 files, +11,832 / −186 lines**, almost all `CONFIG_BCM_KF_*`-guarded. The
+bulk (~10M, 722 files) is **wholly-new vendor source** (the `mach-bcm963xx`
+platform, `Kconfig.bcmconfig`, backported `net/wireguard` + `net/mptcp`, the bcm
+IIO tree, …). Crucially, **0 binary files differ** from mainline — every binary
+in the SDK kernel tree is build output. **There are no proprietary blobs in the
+kernel** (the `wl`/`dhd` blobs are in `bcmdrivers/`, outside the kernel tree).
+
+So the kernel really is "official kernel.org source + a reviewable delta," and
+that path is **implemented** (option 1):
+
+```
+patches/bcm-kf-mods.patch   edits to upstream files (the auditable BCM_KF delta)
+overlay/                    the added vendor source files (browsable)
+patches/deletions.list      upstream files the vendor removes
+scripts/fetch-mainline.sh   pristine 4.19.294 + mods + overlay - deletions  ->  $KD-equivalent
+```
+
+`fetch-mainline.sh` downloads pristine 4.19.294 (sha256-pinned), applies the
+delta, and (with `VERIFY=1`) diffs the result against the SDK tree — **0 source
+differences**. See [`patches/README.md`](../patches/README.md).
+
+**What this gets you / what it doesn't.** It makes the kernel *source* provably
+official-base + auditable-patch (transparency, reviewable BCM_KF footprint, a
+clean base to rebase onto a newer 4.19.x). It does **not** make a near-mainline
+kernel: the ~10M of added vendor source is required (SoC platform + the
+networking glue the closed `wl`/`dhd` bind to), and a *flashable firmware* still
+needs the out-of-tree `bcmdrivers/` + toolchain + those blobs, plus the SDK
+packaging (currently blocked on this snapshot by a missing `bcm_bpm.o` prebuilt,
+unrelated to the kernel).
