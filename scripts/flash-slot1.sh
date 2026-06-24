@@ -143,14 +143,16 @@ if [[ "$ASSUME_YES" != 1 && "$DRYRUN" != 1 ]]; then
     [[ "$ans" == "YES" ]] || die "aborted by user"
 fi
 
-# ---- 5. transfer artifacts (base64 | openssl base64 -d) ----
-# NOT base64 -w0: device openssl chokes on a single huge line. Default base64
-# wraps at 76 cols which openssl handles. Stage to /tmp (/data fills up).
-info "transferring bootfs -> /tmp/bootfs.itb (base64|openssl) ..."
+# ---- 5. transfer artifacts (ssh-cat: binary-safe, runs on the device) ----
+# Use `ssh DEVICE 'cat > file' < img` — the cat runs ON THE DEVICE (no local rtk
+# hook on a binary cat), and ssh is 8-bit clean, so this is binary-safe. (The old
+# `base64 | openssl base64 -d` path silently delivered 0 bytes on the stock slot2
+# image, whose openssl choked — verified 2026-06-24.) Stage to /tmp (/data fills up).
+info "transferring bootfs -> /tmp/bootfs.itb (ssh-cat) ..."
 if [[ "$DRYRUN" == 1 ]]; then
-    echo "DRYRUN> base64 '$BOOTFS' | $SSH $DEVICE 'openssl base64 -d > /tmp/bootfs.itb'"
+    echo "DRYRUN> $SSH $DEVICE 'cat > /tmp/bootfs.itb' < '$BOOTFS'"
 else
-    base64 "$BOOTFS" | $SSH "$DEVICE" 'openssl base64 -d > /tmp/bootfs.itb'
+    $SSH "$DEVICE" 'cat > /tmp/bootfs.itb' < "$BOOTFS"
     GOT="$(dev 'stat -c %s /tmp/bootfs.itb 2>/dev/null' || echo 0)"
     [[ "$GOT" == "$BOOTFS_BYTES" ]] || die "bootfs transfer size mismatch (local $BOOTFS_BYTES vs device $GOT)"
     info "bootfs transferred OK ($GOT bytes)"
@@ -158,9 +160,9 @@ fi
 if [[ -n "$ROOTFS" ]]; then
     info "transferring rootfs -> /tmp/rootfs.img ..."
     if [[ "$DRYRUN" == 1 ]]; then
-        echo "DRYRUN> base64 '$ROOTFS' | $SSH $DEVICE 'openssl base64 -d > /tmp/rootfs.img'"
+        echo "DRYRUN> $SSH $DEVICE 'cat > /tmp/rootfs.img' < '$ROOTFS'"
     else
-        base64 "$ROOTFS" | $SSH "$DEVICE" 'openssl base64 -d > /tmp/rootfs.img'
+        $SSH "$DEVICE" 'cat > /tmp/rootfs.img' < "$ROOTFS"
         GOT="$(dev 'stat -c %s /tmp/rootfs.img 2>/dev/null' || echo 0)"
         [[ "$GOT" == "$ROOTFS_BYTES" ]] || die "rootfs transfer size mismatch (local $ROOTFS_BYTES vs device $GOT)"
         info "rootfs transferred OK ($GOT bytes)"
