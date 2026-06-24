@@ -83,12 +83,23 @@ case "$MODE" in
     fi
     ;;
   image)
-    info "STANDALONE kernel Image build in $KD (kernel-env applied)"
+    info "STANDALONE kernel Image build in $KD (kernel-env + SDK layout vars)"
     [[ -n "${TCDIR:-}" && -d "$TCDIR" ]] || die "crosstools bin not found (set TCDIR)"
-    # NOTE: kmake is a shell function (can't be exec'd by rtk), so invoke the
-    # real `make` binary here with the same env so rtk can wrap/filter it.
+    # BCM_KF=y makes the kernel Makefile `include $(PROFILE_DIR)/../../kernel/
+    # bcmkernel/Makefile.brcm_pre`, which pulls bcmdrivers into the build and
+    # needs the SDK layout vars below (see docs/build-internals.md §5). Without
+    # them the include path collapses to "/../../kernel/...". This is best-effort:
+    # the authoritative packaged build is `full` (build.sh sets all of this).
+    # NOTE: kmake is a shell function (rtk can't exec it), so call make directly.
     run make -C "$KD" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" \
         MODEL="$MODEL" BCM_KF="$BCM_KF" LINUX_VER_STR="$LINUX_VER_STR" \
+        PROFILE_DIR="$SDKDIR/targets/$TARGET" \
+        PROJECT_DIR="$SDKDIR/targets/$TARGET" \
+        BUILD_DIR="$SDKDIR/build" \
+        KERNEL_DIR="$KD" TOPDIR="$KD" \
+        BRCMDRIVERS_DIR="$SDKDIR/bcmdrivers" \
+        BRCMDRIVERS_DIR_RELATIVE=../../bcmdrivers \
+        SHARED_DIR="$SDKDIR/shared" \
         -j"$(nproc)" Image
     ;;
   *)
