@@ -12,6 +12,9 @@
 #                      This is the kernel repo's proper deliverable. The kernel
 #                      can't build truly standalone (BCM_KF compiles bcmdrivers in),
 #                      so this reuses the firmware's build env (toolchain etc.).
+#                      Set TC_FROM_RELEASE=1 to compile against the DEDICATED
+#                      gt-be98-toolchain repo (its published aarch64 Release) via
+#                      scripts/fetch-toolchain.sh, instead of the firmware clone.
 #   full             — drives ~/be98/gt-be98-firmware/build.sh (kernel + userspace
 #                      + .pkgtb). A firmware-level build; produces the flashable
 #                      .pkgtb. Use when you want the whole image.
@@ -91,9 +94,23 @@ case "$MODE" in
     source "$FW/tools/sanitize-host-env.sh"; gtbe98_sanitize_ld_library_path
     # shellcheck source=/dev/null
     source "$FW/tools/env.sh"; gtbe98_sanitize_ld_library_path
+    # TC_FROM_RELEASE=1: compile the kernel against the DEDICATED gt-be98-toolchain
+    # repo (its published aarch64 Release asset) instead of the firmware-vendored
+    # RMerl clone. Fetches+extracts it, puts it first on PATH, and forces the
+    # kernel cross-compiler via KCROSS_COMPILE (make.common's value is overridden
+    # by this command-line assignment). The SDK is still used for the kernel
+    # source/bcmdrivers (unavoidable — BCM_KF); only the cross-toolchain moves.
+    KCROSS_ARG=()
+    if [[ "${TC_FROM_RELEASE:-0}" == 1 ]]; then
+        info "TC_FROM_RELEASE=1 — using published gt-be98-toolchain (aarch64)"
+        TCBIN="$("$HERE/fetch-toolchain.sh" aarch64)"
+        export PATH="$TCBIN:$PATH"
+        KCROSS_ARG=("KCROSS_COMPILE=$TCBIN/aarch64-buildroot-linux-gnu-")
+        info "  kernel cross-gcc: $(command -v aarch64-buildroot-linux-gnu-gcc)"
+    fi
     run env -u LD_LIBRARY_PATH make -C "$SDKDIR" FORCE=1 SHELL=/bin/bash \
         GTBE98_TC_ROOT="$GTBE98_TC_ROOT" GTBE98_ROOT="$GTBE98_ROOT" LD_LIBRARY_PATH= \
-        PROFILE="$TARGET" recipe_kernel
+        PROFILE="$TARGET" "${KCROSS_ARG[@]}" recipe_kernel
     ;;
   full)
     info "FULL firmware build via $FW/build.sh (kernel + userspace + .pkgtb)"
