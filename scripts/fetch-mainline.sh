@@ -107,7 +107,8 @@ EXC=(--exclude=.git --exclude='.config*' --exclude='*.o' --exclude='*.cmd' --exc
      --exclude='x509_certificate_list' --exclude='gen_crc32table' --exclude='asn1_compiler'
      --exclude='fixdep' --exclude='bin2c' --exclude='dtc' --exclude='extract-cert' --exclude='kallsyms'
      --exclude='recordmcount' --exclude='sortextable' --exclude='unifdef' --exclude='modpost'
-     --exclude='mk_elfconfig' --exclude='.missing-syscalls.d')
+     --exclude='mk_elfconfig' --exclude='gen_init_cpio' --exclude='initramfs_data.cpio'
+     --exclude='.missing-syscalls.d')
 
 if [[ "${VERIFY:-0}" == 1 ]]; then
     # shellcheck source=scripts/kernel-env.sh
@@ -116,7 +117,8 @@ if [[ "${VERIFY:-0}" == 1 ]]; then
     info "diffing reconstructed source vs \$KD (source only) ..."
     # also drop dir-only residuals whose basename is a generated dir (config|generated)
     flt() { grep -viE 'include/config|/generated|: (generated|config)$'; }
-    n="$(diff -rq "${EXC[@]}" "$OUTDIR" "$KD" 2>/dev/null | flt | wc -l)"
+    # `|| true`: diff exits nonzero when anything differs; don't let set -e abort.
+    n="$(diff -rq "${EXC[@]}" "$OUTDIR" "$KD" 2>/dev/null | flt | wc -l)" || true
     if [[ "$n" -eq 0 ]]; then
         info "VERIFY OK: reconstructed source == \$KD (0 source differences)"
     else
