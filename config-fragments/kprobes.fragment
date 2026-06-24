@@ -4,13 +4,16 @@
 # Purpose: kprobe the CLOSED stock dhd binary (e.g. its WLC_UP / -110 wedge path)
 # from a kernel module — kprobes is the only way to trace a binary blob.
 #
-# Apply with scripts/configure-kernel.sh; it edits config_base.6a.6813 IN PLACE.
+# Apply with scripts/configure-kernel.sh:
+#   scripts/configure-kernel.sh config-fragments/kprobes.fragment
+# It merges this onto the base defconfig and runs `make olddefconfig`.
 #
-# NOTE on the third line: enabling CONFIG_KPROBES EXPOSES the new symbol
-# CONFIG_KPROBES_SANITY_TEST in the build's Kconfig. If it has no value in
-# config_base, the build's `syncconfig` prompts for it non-interactively ->
-# "Unexpected EOF" -> build fails. So we must PIN it to its default (off).
-# CONFIG_OPTPROBES is `def_bool` -> resolved automatically, no pin needed.
+# This is a standard kbuild config fragment (the same format merge_config.sh
+# consumes). The third line is OPTIONAL: enabling CONFIG_KPROBES exposes
+# CONFIG_KPROBES_SANITY_TEST, but `olddefconfig` resolves newly-exposed symbols
+# to their default (off) automatically — no manual pinning, no "Unexpected EOF".
+# We keep it explicit only to document intent. CONFIG_OPTPROBES is def_bool and
+# is likewise auto-resolved.
 
 CONFIG_KPROBES=y
 CONFIG_KALLSYMS_ALL=y

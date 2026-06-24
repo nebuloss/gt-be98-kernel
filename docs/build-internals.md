@@ -1,17 +1,16 @@
-# GT-BE98 custom kernel — build internals (the hard-won knowledge)
+# GT-BE98 custom kernel — build internals
 
-Everything below was reverse-engineered by hand from the asuswrt-merlin SDK
-(`src-rt-5.04behnd.4916`, profile `96813GW`, kernel **linux-4.19.294**) for the
-ASUS GT-BE98 (BCM6726/6813, "behnd" merlin). It is the knowledge that took a day
-to extract; preserve it. The scripts in this repo encode it so a new kernel
-CONFIG can be added reproducibly instead of by hand.
+How to configure and build a custom kernel for the ASUS GT-BE98 (BCM6726/6813,
+asuswrt-merlin SDK `src-rt-5.04behnd.4916`, profile `96813GW`, Linux
+**4.19.294**) **the standard kbuild way**: a tracked base *defconfig* + *config
+fragments* + `make olddefconfig`, then the SDK's `build.sh` to package.
 
 > Topology: **dev-code** (10.0.50.20) = source + git ONLY, never build.
-> **dev-build** (10.0.50.21) = all compiling, over SSH, wrapped in `rtk` to
-> filter buildroot/kbuild spam. The merlin SDK lives on **both** at
+> **dev-build** (10.0.50.21) = all compiling, over SSH, wrapped in `rtk`. The
+> merlin SDK lives on **both** at
 > `~/be98/gt-be98-firmware/vendor/asuswrt-merlin.ng/release/src-rt-5.04behnd.4916`.
 
-Path shorthand used throughout:
+Path shorthand:
 ```
 FW      = ~/be98/gt-be98-firmware
 SDKDIR  = $FW/vendor/asuswrt-merlin.ng/release/src-rt-5.04behnd.4916
@@ -21,161 +20,167 @@ TARGET  = 96813GW
 
 ---
 
-## 1. The ONLY durable kernel-config source: `config_base.6a.6813`
+## 0. History — three "rules" that turned out to be environment bugs
 
-The kernel `.config` is produced each build by COPYING a base file through a
-chain. The chain (RE'd from the build makefiles):
+An earlier version of this repo edited `$KD/config_base.6a.6813` in place with
+`sed` and forbade `olddefconfig`, built on three claims. **All three were
+investigated empirically (2026-06-24) and disproven** — they were artifacts of
+the *wrong environment*, not real kernel constraints. The evidence:
 
-```
-config_base.6a.6813  --cp-->  config_gt-be98  --(symlink)-->  config_current
-                     --cp-->  .config  --syncconfig-->  built kernel
-```
+| Old claim | Finding |
+|---|---|
+| "`olddefconfig` strips ~64 `CONFIG_BCM_KF_*` symbols — never regen." | With **`BCM_KF=y LINUX_VER_STR=4.19.294 MODEL=GTBE98`** and host tools first on `PATH`, `olddefconfig` preserved **68→68** `BCM_KF` and **195→195** `BCM_*` symbols, 0 lost. The stripping was the `BCM_KF`-*undefined* path: `build/pre_kernelbuild.mk`'s `kernel_cfg_rm_bcm_kf` literally `sed`-deletes `CONFIG_BCM_*=[my]` and only runs when `BCM_KF` is **not** defined. |
+| "Enabling a sub-menu symbol → `(NEW)` prompt → 'Unexpected EOF' — pin every exposed symbol by hand." | That is a **`syncconfig`/`oldconfig`** (interactive) failure. **`olddefconfig` resolves newly-exposed symbols to their defaults non-interactively** — merging `kprobes.fragment` (which exposes `KPROBES_SANITY_TEST`) produced **0 prompts**. No manual pinning needed. |
+| "`.config` is re-copied from `config_base → config_gt-be98 → config_current → .config` every build, so editing `.config` is futile." | **No makefile references `config_base`, `config_gt-be98`, or `config_current`.** The only `cp … .config` lines in `pre_kernelbuild.mk` are **commented out**. The build just runs the kernel's own `make olddefconfig` on the existing `.config`. That "chain" was a *manual* procedure, not a build step; `.config` is **not** clobbered. |
 
-The crucial step is `cp config_current .config`, which runs **every build** and
-**clobbers** `.config`. Therefore editing any of these is **FUTILE** — all are
-overwritten:
-
-- `$KD/.config`                         (overwritten by `cp config_current .config`)
-- `$KD/arch/arm64/defconfig`            (the `gendefconfig` fold-in is **commented
-                                          out** at `build/pre_kernelbuild.mk:34`,
-                                          so `.config` does NOT derive from it)
-- `$SDKDIR/hostTools/scripts/defconfig-bcm.template`  (same — gendefconfig off)
-- the profile `targets/96813GW/96813GW.GT-BE98`  (its `BRCM_KERNEL_*` knobs
-                                          *would* be mapped by gendefconfig, but
-                                          gendefconfig is disabled, so they are
-                                          **inert** for the kernel `.config`)
-
-> (An earlier doc, `gt-be98-open-ethernet/docs/custom-kernel-howto.md §2b`,
-> described editing `defconfig-bcm.template` + `rm .pre_kernelbuild` as the
-> "durable" path. That path is now known NOT to take for this SDK state because
-> gendefconfig is commented out and `.config` is re-copied from `config_current`
-> each build. **`config_base.6a.6813` is the real durable source.** This repo's
-> `configure-kernel.sh` edits `config_base` and supersedes that older recipe.)
-
-**The ONE durable injection point is `$KD/config_base.6a.6813`** — a Jun-16
-source file the build does not regenerate. Edit IT.
-
-> There is also a `config_base.6a.6764L` for a **different chip**. 6813 = our
-> BCM6813 GT-BE98. Use the `.6813` file.
+The `config_base.6a.6813` / `config_gt-be98` / `config_current` files in `$KD`
+are leftover scratch/staging artifacts of that manual process — the merlin build
+does not consume them. **This repo no longer touches them.** The durable,
+version-controlled config source is now `configs/gtbe98_defconfig` in THIS repo.
 
 ---
 
-## 2. NEVER `olddefconfig` / `make clean` on config_base
+## 1. The environment that makes the kernel behave like a normal kernel
 
-Running `olddefconfig` (or any config regeneration) on `config_base.6a.6813`
-strips ~64 `CONFIG_BCM_KF_*` symbols — the host kernel-source environment used by
-the regen does not match the SDK's BCM_KF Kconfig, so those symbols resolve away.
-The build's own `syncconfig` then sees them as missing/NEW, prompts for each
-non-interactively → **"Unexpected EOF"** → build fails.
+Encoded once in [`scripts/kernel-env.sh`](../scripts/kernel-env.sh); every script
+sources it. Four things, all *environment*:
 
-**Rule: only ever edit `config_base.6a.6813` IN PLACE** — flip a line with sed:
+1. **Host tools first on `PATH`** (`/usr/bin:/bin:$TCDIR:$PATH`). The aarch64
+   crosstools `*/usr/bin` ships a `bison` that needs `libreadline.so.6` (absent
+   on modern distros); if it shadows the host `bison`, kconfig won't even build
+   (`bison: error while loading shared libraries: libreadline.so.6`). The SDK's
+   own `tools/env.sh` warns about exactly this.
+2. **`LD_LIBRARY_PATH` unset.** Crosstools `lib/` breaks the host `gcc`/`cc1`
+   (`mpfr_asinpi`). `build.sh` clears it too.
+3. **`BCM_KF=y`.** `$KD/Kconfig.bcmconfig` sources `../bcmkernel/Kconfig.bcm_kf*`
+   **only `if "$(BCM_KF)" = "y"`**. Those files define the ~68 `CONFIG_BCM_KF_*`
+   and ~190 `CONFIG_BCM_*` symbols. Run config without `BCM_KF=y` and they are
+   unknown → dropped. With it, they round-trip cleanly.
+4. **`LINUX_VER_STR=4.19.294`** (Kconfig sources `Kconfig.bcm_kf.$(LINUX_VER_STR)`)
+   and **`MODEL=GTBE98`** (the top Makefile does `-D$(MODEL)`; a bare `-D`
+   errors "macro names must be identifiers"). `ARCH=arm64`,
+   `CROSS_COMPILE=aarch64-buildroot-linux-gnu-` as usual.
 
-```
-sed:  '# CONFIG_X is not set'   ->   'CONFIG_X=y'
-```
+`kernel-env.sh` exports these and provides `kmake` (= `make -C $KD` with the
+flags applied). Use `kmake olddefconfig`, `kmake menuconfig`, `kmake savedefconfig`,
+`kmake -j"$(nproc)" Image`, etc.
 
-That is exactly what `scripts/configure-kernel.sh` does (with a `.orig` backup).
-Never regenerate it.
-
----
-
-## 3. New-symbol pinning gotcha (the subtle one)
-
-Enabling a CONFIG that **exposes previously-hidden symbols** (because it opens a
-sub-menu) makes the build's `syncconfig` prompt for every newly-VISIBLE symbol
-that has no value yet → EOF → fail.
-
-- Example: `CONFIG_FTRACE=y` opens the entire tracing menu (`KPROBE_EVENTS`,
-  `FUNCTION_TRACER`, dozens more) → many new prompts.
-- That is why the KPROBES work stayed KPROBES-only (a kprobe kernel module needs
-  only `register_kprobe`, no tracefs).
-
-**Fix: pin every newly-exposed symbol in `config_base`** (usually
-`# CONFIG_X is not set`). Iterate: build → read the `(NEW)` prompt in the log →
-add that symbol's default to your fragment → re-apply → rebuild. Repeat until no
-new prompts.
-
-For **KPROBES** the complete set is:
-```
-CONFIG_KPROBES=y
-CONFIG_KALLSYMS_ALL=y
-# CONFIG_KPROBES_SANITY_TEST is not set     <- newly exposed by KPROBES; must pin
-```
-(`CONFIG_OPTPROBES` is `def_bool` → auto-resolved, no pin needed.)
-That is `config-fragments/kprobes.fragment`.
+> kconfig 4.19 quirk: when pointing `KCONFIG_CONFIG` at a scratch file, keep it
+> **relative to `$KD`**. An absolute `/tmp/...` path makes `conf` fail with
+> "Error during writing of the configuration" (it writes its temp/backup
+> relative to the cwd). The scripts always operate on `$KD/.config`, so this
+> only bites ad-hoc experiments.
 
 ---
 
-## 4. Full build
+## 2. The config workflow (standard kbuild)
+
+```
+configs/gtbe98_defconfig        # tracked, minimal (savedefconfig) base — STOCK
+        │  make gtbe98_defconfig
+        ▼
+   $KD/.config                  # expanded
+        │  merge_config.sh -m  config-fragments/*.fragment
+        ▼
+   $KD/.config (+ deltas)
+        │  make olddefconfig     # resolve all (incl. newly-exposed) to defaults
+        ▼
+   $KD/.config (final, ready to build)
+```
+
+[`scripts/configure-kernel.sh`](../scripts/configure-kernel.sh) does all three
+steps:
 
 ```bash
-cd $FW && rtk ./build.sh
+# on dev-build
+cd ~/be98/gt-be98-kernel && git pull
+scripts/configure-kernel.sh config-fragments/kprobes.fragment
 ```
-`build.sh` is an env+orchestration wrapper that ends with, inside `$SDKDIR`:
+
+It installs `gtbe98_defconfig` into `arch/arm64/configs/` (so the standard
+`make <name>_defconfig` target works), seeds `.config`, merges fragments with
+the kernel's own `scripts/kconfig/merge_config.sh`, and runs `olddefconfig`. It
+reports the resulting `BCM_KF` count (expect ~68) as a preserved-symbols check.
+
+**A config fragment** is a plain file of `CONFIG_X=y` / `# CONFIG_X is not set`
+lines — the exact format `merge_config.sh` consumes. See
+`config-fragments/kprobes.fragment`. To add a feature: drop a new fragment in
+`config-fragments/`, pass it to `configure-kernel.sh`, build.
+
+**Interactive tuning:** `scripts/configure-kernel.sh -m [fragments...]` seeds the
+config then opens `make menuconfig`. To persist what you changed back into the
+tracked base, run [`scripts/save-defconfig.sh`](../scripts/save-defconfig.sh)
+(`make savedefconfig` → `configs/gtbe98_defconfig`), copy it to dev-code, commit.
+
+### Why a defconfig + fragments (not in-place edits)
+
+`make menuconfig` at the **SDK top level** edits the profile, not the kernel
+`.config` (gendefconfig is commented out in `pre_kernelbuild.mk`, so the profile
+is inert for the kernel config). The durable lever is the kernel `.config`, and
+the reproducible, reviewable, version-controlled way to express it is a base
+defconfig plus fragments — regenerated deterministically each time.
+
+### savedefconfig fidelity (verified)
+
+`savedefconfig` emits only symbols that differ from their Kconfig default (647
+lines vs ~3400 set lines). Re-expanding it (`make gtbe98_defconfig` +
+`olddefconfig`, in the `BCM_KF=y` env) reproduced the known-good config
+**exactly**: BCM_KF 68, BCM_* 196, 0 symbols lost/added. And **stock base +
+`kprobes.fragment`** reproduced the hand-built KPROBES config exactly. So the
+minimal defconfig is a faithful base as long as the SDK Kconfig is unchanged.
+
+---
+
+## 3. Build
+
+```bash
+scripts/build-kernel.sh            # full: $FW/build.sh -> .pkgtb (reliable, packaged)
+scripts/build-kernel.sh image      # standalone `kmake -jN Image` (fast config-compile check)
+scripts/build-kernel.sh --remote   # from dev-code, dispatch the full build to dev-build
 ```
-env -u LD_LIBRARY_PATH make FORCE=1 SHELL=/bin/bash \
-    GTBE98_TC_ROOT=... GTBE98_ROOT=... LD_LIBRARY_PATH= gt-be98
+
+`build.sh` ends with, inside `$SDKDIR`:
+```
+env -u LD_LIBRARY_PATH make FORCE=1 SHELL=/bin/bash GTBE98_*_ROOT=... LD_LIBRARY_PATH= gt-be98
 ```
 - `FORCE=1` recompiles even when `.config` is unchanged.
 - `SHELL=/bin/bash` — the SDK asserts `$BASH_VERSION`; Debian `/bin/sh` is dash.
-- `env -u LD_LIBRARY_PATH` + `LD_LIBRARY_PATH=` — merlin must not use the
-  crosstool `lib/`.
-- **profile_saved_check guard:** if a profile file is newer than its
-  `.last_profile` cookie, the guard fires; `FORCE=1` touches the cookie and
-  exits 1 on the FIRST run. So just **re-run `build.sh` once** (build-kernel.sh
-  retries automatically). You do NOT need to touch the profile for a config_base
-  change.
+- `env -u LD_LIBRARY_PATH` + `LD_LIBRARY_PATH=` — host tools must not use crosstool `lib/`.
+- **profile_saved_check guard:** on the FIRST `FORCE=1` run it may touch
+  `.last_profile` and exit 1; just re-run (build-kernel.sh retries once).
 
----
+The build runs the kernel's own `make olddefconfig` (via `build/Bcmkernel.mk`)
+against the `.config` you produced — it does not regenerate it from anything
+else. For a **packaged, flashable** image use `full`; `image` only builds the
+raw `Image` and is for checking that a config compiles.
 
-## 5. Standalone kernel-only build (faster, fragile)
-
-In `$KD`:
+### Standalone kernel build (what `image` runs)
 ```bash
-make ARCH=arm64 CROSS_COMPILE=aarch64-buildroot-linux-gnu- \
-     MODEL=GTBE98 BCM_KF=y LINUX_VER_STR=4.19.294 -j$(nproc) Image
+kmake -j"$(nproc)" Image          # == make -C $KD ARCH=arm64 CROSS_COMPILE=... MODEL=GTBE98 BCM_KF=y LINUX_VER_STR=4.19.294 Image
 ```
-Discovered-the-hard-way requirements:
-
-- **PATH** must include the crosstools bin:
-  `$FW/toolchain/am-toolchains/brcm-arm-hnd/crosstools-aarch64-gcc-10.3-linux-4.19-glibc-2.32-binutils-2.36.1/bin`
-  (cross prefix `aarch64-buildroot-linux-gnu-`).
-- **`LINUX_VER_STR=4.19.294`** — Kconfig sources `Kconfig.bcm_kf.$(LINUX_VER_STR)`.
-- **`MODEL=GTBE98`** — without it the top Makefile (~line 452)
-  `KBUILD_CFLAGS += -D$(MODEL)` becomes a bare `-D` → *"macro names must be
-  identifiers"*.
-- **`BCM_KF=y`** — `Kconfig.bcmconfig` sources the BCM_KF symbol defs only
-  `if "$(BCM_KF)" = "y"`; without it ~380 BCM_KF symbols (incl
-  `BCM_SKB_CB_SIZE`) vanish → compile errors.
-- For **out-of-tree modules** against this kernel you ALSO need:
-  `BUILD_DIR=$SDKDIR KERNEL_DIR=$KD TOPDIR=$KD BRCMDRIVERS_DIR=$SDKDIR/bcmdrivers
-  BRCMDRIVERS_DIR_RELATIVE=../../bcmdrivers SHARED_DIR=$SDKDIR/shared`
-  (the `Makefile.brcm_pre` `-I` paths; `bcm_skbuff.h` needs `BUILD_DIR`).
-
-A standalone `make Image` works without the module vars, but `BCM_KF=y` pulls
-bcmdrivers into the kernel build which then needs more vars — so for a packaged
-kernel image **the full `build.sh` is more reliable**. Use `image` mode only to
-check that a config compiles.
+`BCM_KF=y` pulls bcmdrivers into the kernel build, which for some targets needs
+more module vars (`BUILD_DIR`, `KERNEL_DIR`, `BRCMDRIVERS_DIR`, …). For a
+packaged kernel the full `build.sh` is more reliable; use `image` for quick
+compile checks.
 
 ---
 
-## 6. Output + verifying the config landed
+## 4. Output + verifying the config landed
 
 - Raw kernel image: `$KD/arch/arm64/boot/Image`
-- Full build packages:
-  - `$SDKDIR/targets/96813GW/GT-BE98_3006_102.6_0_nand_squashfs.pkgtb` (the
-    flashable container; with KPROBES it was ~77.8 MB vs stock ~77.37 MB)
-  - `bcm96813GW_uboot_linux.itb` (the bootfs FIT)
-- Verify the configs compiled in:
+- Packaged: `$SDKDIR/targets/96813GW/GT-BE98_*_nand_squashfs.pkgtb` (flashable
+  container) and `bcm96813GW_uboot_linux.itb` (bootfs FIT).
+- Verify configs compiled in (build-kernel.sh does this via `VERIFY_SYMS`):
   ```bash
-  zcat $KD/kernel/config_data.gz | grep CONFIG_KPROBES     # =y
-  grep register_kprobe $KD/System.map                      # symbol present
+  zcat $KD/kernel/config_data.gz | grep CONFIG_KPROBES   # =y
+  grep register_kprobe $KD/System.map                    # symbol present
   ```
-  `scripts/build-kernel.sh` runs these checks automatically (set `VERIFY_SYMS`).
 
 ---
 
-## 7. Split + flash (device = `ssh -p 2222 admin@10.0.0.8`)
+## 5. Split + flash (device = `ssh -p 2222 admin@10.0.0.8`)
+
+Unchanged from the packaging story; the kernel-config rework does not touch it.
 
 ### Split
 The `.pkgtb` is a FIT with two sub-images:
@@ -183,62 +188,71 @@ The `.pkgtb` is a FIT with two sub-images:
 dumpimage -T flat_dt -p 0 -o bootfs.itb <pkgtb>   # kernel FIT (ATF+u-boot+kernel+DTB), ~13MB
 dumpimage -T flat_dt -p 1 -o rootfs.img <pkgtb>   # rootfs squashfs, ~62MB
 ```
-For a **kernel-only change, flash ONLY the bootfs**. (`scripts/split-pkgtb.sh`.)
+For a **kernel-only change, flash ONLY the bootfs** (`scripts/split-pkgtb.sh`).
 
-### Transfer to device (binary-safe)
-Device busybox has **no base64** and the `rtk` Bash hook rejects binary `cat`, so
-use WRAPPED base64 (default 76-col wrap — NOT `base64 -w0`, device openssl chokes
-on one huge line). Stage to `/tmp` (`/data` fills up):
+### Transfer (binary-safe)
+Device busybox has no base64 and the `rtk` hook rejects binary `cat`; use wrapped
+base64 (default 76-col, NOT `-w0`). Stage to `/tmp` (`/data` fills up):
 ```bash
 base64 bootfs.itb | ssh -p 2222 admin@10.0.0.8 'openssl base64 -d > /tmp/bootfs.itb'
-# pull FROM device:
-ssh -p 2222 admin@10.0.0.8 'openssl base64 -e < file' | base64 -d > out
 ```
 
-### The slot model
+### Slot model
 | | bootfs vol | rootfs vol | rootfs blk | trial IP | role |
 |---|---|---|---|---|---|
 | **slot1** | `ubi0_3` (`bootfs1`, static) | `ubi0_4` (`rootfs1`) | `/dev/ubiblock0_4` | **10.0.0.95** | the **trial** slot we flash |
 | **slot2** | `ubi0_5` (`bootfs2`) | `ubi0_6` (`rootfs2`) | `/dev/ubiblock0_6` | **10.0.0.8** | committed stock fallback |
 
-(Numbers observed on this unit — `scripts/flash-slot1.sh` re-confirms live with
-`ubinfo` and refuses to touch the slot2 range.)
-
-**Flash slot1 ONLY, NEVER slot2.** `bcm_bootstate` is authoritative for which
-slot is committed. Currently slot2 is committed (safe fallback); slot1 is the
-trial. If the new bootfs is bigger than the vol, grow it:
-```bash
-ubirmvol /dev/ubi0 -N bootfs1
-ubimkvol /dev/ubi0 -N bootfs1 -s <bytes> -t static -n 3
-ubiupdatevol /dev/ubi0_3 /tmp/bootfs.itb
-```
-Then arm a one-time slot1 boot and reboot:
-```bash
-bcm_bootstate 6     # boot slot1 ONCE; does NOT change commit flags
-reboot
-```
+**Flash slot1 ONLY, NEVER slot2.** `scripts/flash-slot1.sh` re-confirms volumes
+live with `ubinfo`, refuses unless `bcm_bootstate` says slot2 is committed,
+refuses if booted on slot1, grows the volume if the image is larger, then
+`bcm_bootstate 6` (boot slot1 ONCE) + reboot.
 
 ### Safety / recovery
-- A fully-booting firmware **AUTO-COMMITS its slot** — `bcm_bootstate 6` alone is
-  NOT revert-safe once slot1 boots clean. Layer the **deadman watchdog**: it
-  reverts to slot2 in ~4 min if slot1 wedges. Slot1's minimal rootfs does NOT
-  auto-load wifi/nvram.
-- After a good slot1 boot, to KEEP it: on the device
+- A fully-booting firmware **auto-commits its slot** — `bcm_bootstate 6` alone is
+  not revert-safe once slot1 boots clean. Layer the deadman watchdog (reverts to
+  slot2 in ~4 min). After a good slot1 boot, to keep it: on the device
   `touch /tmp/deadman-disarm; /bin/wdtctl stop`.
 - Force-revert any time: on the device `bcm_bootstate 7 && reboot` → stock slot2.
-- Device IP flips by slot: slot1 trial = 10.0.0.95, slot2 stock = 10.0.0.8. A
-  poll seeing 10.0.0.8 right after `reboot` may be the pre-reboot slot2 still up
-  — wait for link-down first.
 
 > **Live flash/boot needs per-session user authorization.** Building on dev-build
-> and operating on `config_base` copies is always fine; flashing a device is not.
+> and regenerating `.config` from the repo base is always fine; flashing is not.
 
 ---
 
-## 8. Why a fragment, not menuconfig
+## 6. "Official kernel.org sources + proprietary blobs" — feasibility
 
-`make menuconfig` in `$SDKDIR` edits the **profile**, not the kernel `.config`
-(gendefconfig is off). The durable lever is `config_base` text. A *fragment* (a
-file of `CONFIG_X=y` / `# CONFIG_X is not set` lines) applied in place is the
-reproducible, reviewable, version-controllable way to express a kernel-config
-delta — which is the whole point of this repo.
+A natural goal: build from **mainline/official Linux 4.19.294** plus only the
+closed **blobs**, instead of Broadcom's patched SDK tree. In theory yes; in
+practice this is a large project for a BCM6813 "behnd" router, because the parts
+that make it a *router* are out-of-tree **source patches**, not just loadable
+blobs:
+
+- **`CONFIG_BCM_KF_*`** ("Broadcom Kernel Feature") — ~68 symbols gating
+  thousands of lines of in-tree patches across arch/mm/net/drivers. These are
+  not modules you load; they modify core kernel code.
+- **`bcmdrivers/` + `bcmkernel/`** — the SoC platform (boot, clocks, memory
+  map), the packet accelerator (Runner/RDP/pktflow/Archer/FAP), Ethernet/switch,
+  flash/UBI, etc. Mostly source (some objects). Mainline has **no** support for
+  these "behnd" SoCs.
+- **WiFi (`dhd`/`wl`)** — the closed blob. It is compiled/linked against the
+  **vendor kernel's ABI** and expects the BCM_KF networking hooks (`BCM_KF_BLOG`,
+  `BCM_KF_WL`, the pktflow path). Dropping it onto a clean kernel.org tree won't
+  give working WiFi without that surrounding patched infrastructure.
+
+So a kernel.org-based build that keeps **WiFi + hardware routing** working is not
+currently feasible without effectively reconstructing Broadcom's out-of-tree
+tree. The realistic spectrum:
+
+1. **This repo today** — vendor tree, standard config/build workflow. Works.
+2. **Port BCM_KF onto clean 4.19.294** — extract the vendor delta as patches and
+   re-apply to kernel.org 4.19.294. Large, ongoing maintenance; still needs the
+   closed bcmdrivers/wl for a useful router.
+3. **OpenWrt-style** — only partial upstream support exists for some BCM63xx;
+   BE-series WiFi 7 (BCM6813 + wl/dhd) is not openly supported.
+
+**A concrete, low-risk first step** (not yet done) is to *quantify the distance
+from mainline*: diff the SDK's `$KD` against an unpacked kernel.org 4.19.294 to
+measure the patch surface (files touched, `BCM_KF` hunks). That turns "in theory"
+into a real estimate before committing to a port. Ask for it and it can be run on
+dev-build the same evidence-based way the rest of this doc was established.

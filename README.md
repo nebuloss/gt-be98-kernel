@@ -2,17 +2,18 @@
 
 Reproducible custom **kernel** builds for the **ASUS GT-BE98** (BCM6726/6813,
 asuswrt-merlin SDK `src-rt-5.04behnd.4916`, profile `96813GW`, **Linux
-4.19.294**).
+4.19.294**), done the **standard kbuild way**: a tracked base *defconfig* +
+*config fragments* + `make olddefconfig`, then the SDK's `build.sh` to package,
+then split + flash.
 
-This repo encapsulates the hard-won, reverse-engineered build knowledge so a
-custom kernel CONFIG can be added **easily and reproducibly** — replacing the
-ad-hoc, error-prone process figured out by hand. It is SCRIPTS + DOCS + config
-fragments that operate on the merlin SDK **in place**; it does **not** vendor a
-copy of the SDK.
+This repo is SCRIPTS + DOCS + a base defconfig + config fragments that operate
+on the merlin SDK **in place**; it does **not** vendor a copy of the SDK.
 
-> **Read [`docs/build-internals.md`](docs/build-internals.md) first.** It is the
-> full explanation of the merlin config chain and every gotcha. The scripts just
-> encode it.
+> **Read [`docs/build-internals.md`](docs/build-internals.md)** for the full
+> story — including the three old "rules" (no `olddefconfig`, hand-pin new
+> symbols, `.config` is clobbered each build) that were investigated and
+> **disproven**. They were wrong-environment artifacts; in the right env this
+> kernel configures like any normal kernel.
 
 ---
 
@@ -20,25 +21,48 @@ copy of the SDK.
 
 - **dev-code** (10.0.50.20): source + git ONLY. Do **NOT** build here.
 - **dev-build** (10.0.50.21): all compiling, over SSH (`ssh guillaume@10.0.50.21`),
-  wrapped in `rtk` to filter build spam.
-- The merlin SDK lives on **both** machines at:
+  wrapped in `rtk`.
+- SDK lives on **both** at
   `~/be98/gt-be98-firmware/vendor/asuswrt-merlin.ng/release/src-rt-5.04behnd.4916`
-  (`SDKDIR`). The kernel tree is `$SDKDIR/kernel/linux-4.19` (`KD`).
+  (`SDKDIR`); kernel tree `$SDKDIR/kernel/linux-4.19` (`KD`).
 - Device: `ssh -p 2222 admin@10.0.0.8` (committed slot2). Flash slot1 ONLY.
 
-Workflow: edit a config fragment here → commit/push → on dev-build pull, run
-`configure-kernel.sh` (edits `config_base` in place) → `build-kernel.sh` →
-`split-pkgtb.sh` → `flash-slot1.sh`.
+Workflow: edit/add a fragment here → commit/push → on dev-build pull →
+`configure-kernel.sh` (regenerates `$KD/.config` from base + fragments) →
+`build-kernel.sh` → `split-pkgtb.sh` → `flash-slot1.sh`.
 
 ---
 
-## The one thing to know
+## The model
 
-The kernel `.config` is re-copied from a base file **every build**, so editing
-`.config` / `defconfig` / the profile is futile. **The only durable config
-source is `$KD/config_base.6a.6813`.** Edit it IN PLACE (never `olddefconfig` it).
-A *fragment* expresses your config delta; `configure-kernel.sh` applies it. See
-the internals doc for the why.
+Just like a normal kernel: **configure → `make` → package → flash.**
+
+```
+configs/gtbe98_defconfig   --make gtbe98_defconfig-->  .config
+  + config-fragments/*     --merge_config.sh-------->  .config
+                           --make olddefconfig------>  .config   (ready)
+  build.sh (make gt-be98)  ----------------------->   .pkgtb
+  split-pkgtb.sh           ----------------------->   bootfs.itb + rootfs.img
+  flash-slot1.sh           ----------------------->   slot1 (trial)
+```
+
+- **Durable config source** = `configs/gtbe98_defconfig` in THIS repo (a minimal
+  `savedefconfig`, version-controlled). The old in-place editing of the SDK's
+  `config_base.6a.6813` is gone.
+- **Feature deltas** = standard kbuild **fragments** in `config-fragments/`.
+- `make olddefconfig` (with `BCM_KF=y`) is **safe and required** — it preserves
+  all `BCM_KF` symbols and resolves newly-exposed symbols to defaults
+  non-interactively (no pinning, no "Unexpected EOF").
+
+The four env knobs that make this work (host tools first on `PATH`, no
+`LD_LIBRARY_PATH`, `BCM_KF=y`, `LINUX_VER_STR=4.19.294`/`MODEL=GTBE98`) are
+encoded once in [`scripts/kernel-env.sh`](scripts/kernel-env.sh).
+
+> **Why the vendor tree, not mainline kernel.org?** This SDK's 4.19 is heavily
+> patched (`CONFIG_BCM_KF_*`, the closed `dhd`/`wl` WiFi stack, FIT/UBI flash
+> packaging). Building from official sources + blobs is a much larger effort —
+> see `docs/build-internals.md` §6. This repo standardizes the *config + build*
+> within the working vendor tree first.
 
 ---
 
@@ -47,18 +71,18 @@ the internals doc for the why.
 ```bash
 # --- on dev-build (10.0.50.21) ---
 ssh guillaume@10.0.50.21
-cd ~/be98/gt-be98-kernel && git pull        # this repo, checked out on dev-build
+cd ~/be98/gt-be98-kernel && git pull
 
-# 1. Apply the config fragment to the DURABLE config_base (in place, with .orig backup)
+# 1. Regenerate .config from the base defconfig + the fragment(s) you want.
 ./scripts/configure-kernel.sh config-fragments/kprobes.fragment
 
-# 2. Build (full build.sh -> .pkgtb) and verify the symbols landed
+# 2. Build (full build.sh -> .pkgtb) and verify the symbols landed.
 VERIFY_SYMS="CONFIG_KPROBES CONFIG_KALLSYMS_ALL register_kprobe" ./scripts/build-kernel.sh
 
-# 3. Split the .pkgtb into bootfs.itb + rootfs.img
-./scripts/split-pkgtb.sh        # auto-finds the GT-BE98 pkgtb
+# 3. Split the .pkgtb into bootfs.itb + rootfs.img.
+./scripts/split-pkgtb.sh
 
-# 4. Flash SLOT1 ONLY (kernel-only change -> bootfs alone), arm one-time boot, reboot
+# 4. Flash SLOT1 ONLY (kernel-only change -> bootfs alone), arm one-time boot, reboot.
 #    (REQUIRES per-session user authorization to touch the device)
 ./scripts/flash-slot1.sh /path/to/targets/96813GW/bootfs.itb
 ```
@@ -66,25 +90,32 @@ VERIFY_SYMS="CONFIG_KPROBES CONFIG_KALLSYMS_ALL register_kprobe" ./scripts/build
 From dev-code you can dispatch the build to dev-build:
 `./scripts/build-kernel.sh --remote full`.
 
+Interactive: `./scripts/configure-kernel.sh -m config-fragments/kprobes.fragment`
+seeds the config then opens `menuconfig`; persist changes with
+`./scripts/save-defconfig.sh`.
+
 ---
 
 ## Repo layout
 
 ```
 README.md                      this file
-docs/build-internals.md        the full config-chain + gotchas knowledge (READ FIRST)
+docs/build-internals.md        full config-chain + env knowledge (READ for the why)
+configs/
+  gtbe98_defconfig             tracked minimal base defconfig (STOCK; savedefconfig)
 config-fragments/
-  kprobes.fragment             verified KPROBES delta (KPROBES, KALLSYMS_ALL, SANITY_TEST pinned)
+  kprobes.fragment             example feature delta (standard kbuild fragment)
 scripts/
-  configure-kernel.sh          apply a fragment to config_base.6a.6813 IN PLACE (idempotent, .orig backup, --restore)
-  build-kernel.sh              build on dev-build via rtk (full | image), verify config_data.gz/System.map, print pkgtb
+  kernel-env.sh                sourced env helper (PATH/LD_LIBRARY_PATH/BCM_KF/...)
+  configure-kernel.sh          base defconfig + fragments + olddefconfig -> $KD/.config
+  save-defconfig.sh            $KD/.config -> configs/gtbe98_defconfig (savedefconfig)
+  build-kernel.sh              build on dev-build via rtk (full | image), verify, print pkgtb
   split-pkgtb.sh               dumpimage split of the .pkgtb into bootfs.itb + rootfs.img
   flash-slot1.sh               transfer + flash SLOT1 only (safety-guarded), bcm_bootstate 6 + reboot
 ```
 
-All scripts parameterize SDK/device paths via env vars with sensible defaults
-(`SDKDIR`, `KD`, `FW`, `TARGET`, `DEVICE`, `DEVPORT`, ...). No secrets are
-hardcoded.
+Scripts parameterize SDK/device paths via env vars with sensible defaults
+(`FW`, `SDKDIR`, `KD`, `TARGET`, `DEVICE`, `DEVPORT`, ...). No secrets hardcoded.
 
 ---
 
@@ -96,54 +127,50 @@ hardcoded.
    # CONFIG_FOO_DEBUG is not set
    ```
 2. `./scripts/configure-kernel.sh config-fragments/myfeature.fragment`
+   (combine multiple: pass several fragment paths.)
 3. `./scripts/build-kernel.sh`
-4. If the build log shows a `(NEW)` prompt → "Unexpected EOF", you enabled a
-   symbol that exposed sub-symbols. Add each newly-visible symbol's default to
-   your fragment (usually `# CONFIG_X is not set`), re-apply, rebuild. Iterate.
-   See internals doc §3.
 
-To revert `config_base` to pristine: `./scripts/configure-kernel.sh --restore`.
+`olddefconfig` auto-resolves any symbols your change newly exposes — you do
+**not** have to pin them by hand. To bake a setting into the base instead of a
+fragment, tune via `configure-kernel.sh -m` then `save-defconfig.sh`.
 
 ---
 
 ## Safety (flashing)
 
-`flash-slot1.sh` enforces the golden rules: it refuses unless `bcm_bootstate`
-confirms **slot2 is committed** (the fallback), refuses if the device is booted
-on slot1, refuses any volume in the slot2 range, transfers binary-safe via
-`base64 | openssl base64 -d`, grows the volume if the image is larger, then
-`bcm_bootstate 6` (boot slot1 ONCE) + reboot. A fully-booting firmware
-auto-commits its slot, so layer the deadman watchdog for risky boots (reverts to
-slot2 in ~4 min). Recover any time: on the device `bcm_bootstate 7 && reboot`.
+`flash-slot1.sh` enforces the golden rules: refuses unless `bcm_bootstate`
+confirms slot2 is committed, refuses if booted on slot1, refuses any slot2-range
+volume, transfers binary-safe via `base64 | openssl base64 -d`, grows the volume
+if needed, then `bcm_bootstate 6` (boot slot1 ONCE) + reboot. A fully-booting
+firmware auto-commits its slot, so layer the deadman watchdog for risky boots
+(reverts to slot2 in ~4 min). Recover any time: on the device
+`bcm_bootstate 7 && reboot`.
 
 **Live flash/boot requires per-session user authorization.** Building and
-applying fragments on copies is always fine.
+regenerating `.config` on dev-build is always fine.
 
 ---
 
 ## Validation status
 
-- `configure-kernel.sh` was validated against a COPY of the live
-  `config_base.6a.6813` applying `kprobes.fragment` (correct in-place edits +
-  idempotency + `--restore`). The live `config_base` on dev-build was **not**
-  disturbed (WiFi work is mid-flight).
-- All scripts pass `bash -n` syntax checks.
-- **A full kernel build and a device flash were NOT run end-to-end by the
-  author of this repo** — the build/flash recipes are transcribed from a verified
-  prior session (see `docs/build-internals.md`) but should be exercised once on
-  dev-build/device before relying on them blindly.
+- The standard config pipeline was validated end-to-end against the live tree on
+  dev-build (configs only, live `.config` untouched during the experiments):
+  - `olddefconfig` with `BCM_KF=y` preserves **68/68** `BCM_KF` and **195/195**
+    `BCM_*` symbols, **0** `(NEW)` prompts.
+  - `savedefconfig` round-trips the known-good config **exactly** (0 lost/added).
+  - **stock base + `kprobes.fragment` + olddefconfig == the hand-built KPROBES
+    config, exactly.**
+- A full `build.sh` end-to-end build with this pipeline: see the commit/PR notes
+  for the latest run on dev-build.
 
 ---
 
 ## GitHub remote
 
 Intended remote: `git@github.com:nebuloss/gt-be98-kernel.git`.
-As of repo creation that GitHub repo **did not exist yet** (`git ls-remote`
-returned "Repository not found"), so nothing was pushed. To create + push:
-
 ```bash
 gh repo create nebuloss/gt-be98-kernel --private --source=. --remote=origin --push
-# or, if the repo is created via the web UI:
+# or, if created via web UI:
 git remote add origin git@github.com:nebuloss/gt-be98-kernel.git
 git push -u origin main
 ```
