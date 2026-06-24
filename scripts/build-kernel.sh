@@ -93,6 +93,7 @@ case "$MODE" in
     # NOTE: kmake is a shell function (rtk can't exec it), so call make directly.
     run make -C "$KD" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" \
         MODEL="$MODEL" BCM_KF="$BCM_KF" LINUX_VER_STR="$LINUX_VER_STR" \
+        BRCM_CHIP="${BRCM_CHIP:-6813}" BCM_CHIP="${BCM_CHIP:-6813}" \
         PROFILE_DIR="$SDKDIR/targets/$TARGET" \
         PROJECT_DIR="$SDKDIR/targets/$TARGET" \
         BUILD_DIR="$SDKDIR" \
